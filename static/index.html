@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#007aff">
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('service-worker.js')
+          .then(reg => console.log('SW registered', reg.scope))
+          .catch(err => console.error('SW failed', err));
+      });
+    }
+  </script>
+
+  <meta charset="UTF-8" />
+  <title>BLE Visualizer</title>
+  <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+  <style>
+    /* Full-page dark background */
+    html, body {
+      background-color: #121212;
+      color: #e0e0e0;
+      font-family: sans-serif;
+      margin: 0;
+      padding: 20px;
+      height: 100%;
+    }
+    h2 {
+      color: #fff;
+      margin-bottom: 10px;
+      font-size: 2.5rem; /* scale title too */
+    }
+    h3 {
+      color: #fff;
+      margin-bottom: 10px;
+      font-size: 1.5rem; /* scale title too */
+    }
+  
+
+    /* 1.5× larger buttons & selects */
+    button, select {
+      font-size: 1.2rem;
+      padding: 18px 30px;
+      margin: 15px;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: transform 0.1s ease, opacity 0.2s ease;
+      background-image: linear-gradient(45deg, #007aff, #00ff6a);
+      color: #fff;
+      box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+    }
+    button:hover, select:hover {
+      opacity: 0.9;
+      transform: translateY(0);
+    }
+    button:active, select:active {
+      transform: translateY(0);
+      opacity: 0.8;
+    }
+    select {
+      background-image: linear-gradient(45deg, #0057e7, #00c851);
+    }
+
+    /* Status text */
+    #status {
+      margin-top: 12px;
+      font-weight: bold;
+      color: #ffeb3b;
+      font-size: 1.25rem;
+    }
+
+    /* Plot container full height minus controls */
+    #plot {
+      width: 100%;
+      height: 40vh;
+      background-color: #1e1e1e;
+      border-radius: 20px;
+      box-shadow: inset 0 0 10px rgba(0,0,0,0.2);
+      margin-top: 20px;
+    }
+  </style>
+</head>
+<body>
+  <h2>BLE 4-ORGANOIDS MONITORING</h2>
+  <h3>@ Copyright - Chi Cong Nguyen</h3>
+
+  <div>
+    <button onclick="scan()">🔍 Scan</button>
+    <select id="deviceList">
+      <option value="" disabled selected>Select device</option>
+    </select>
+    <button onclick="connect()">🔌 Connect</button>
+    <button onclick="start()">▶️ Start Recording</button>
+    <button onclick="stop()">⏹️ Stop Recording</button>
+    <button onclick="download()">💾 Save CSV</button>
+    <div id="status">Not connected</div>
+  </div>
+
+  <div id="plot"></div>
+
+  
+  <script>
+    let ws = null;
+    let sampleCount = 0;
+
+    // Custom colors for each channel
+    const colors = ['#CF4B40', '#CFB841', '#A5CF41', '#56CF41'];
+
+    // Create initial traces, each tied to its own subplot axes
+    const traces = [0,1,2,3].map(i => ({
+      x: [], 
+      y: [], 
+      mode: 'lines', 
+      name: `Channel ${i}`,
+      line: { width: 3, color: colors[i] },
+      xaxis: `x${i+1}`,
+      yaxis: `y${i+1}`
+    }));
+
+    // Build a 4×1 grid layout
+    const layout = {
+      grid: { rows: 4, columns: 1, pattern: 'independent' },
+      paper_bgcolor: '#1e1e1e',
+      plot_bgcolor:  '#1e1e1e',
+      font:         { color: '#e0e0e0', size: 30 },
+      showlegend:   false,
+      margin:       { t: 80, b: 80, l: 60, r: 20 },
+      // title:        { text: 'Live BLE Data', font: { size: 36 } },
+      annotations:  traces.map((t, i) => ({
+        text: t.name,
+        xref: `x${i+1} domain`,
+        yref: `y${i+1} domain`,
+        x: 0.95, y: 1.2,
+        showarrow: false,
+        font: { size: 20, color: colors[i] }
+      })),
+
+      // Hide the first 3 X-axes
+      xaxis1: { showticklabels: false, title: '' },
+      xaxis2: { showticklabels: false, title: '' },
+      xaxis3: { showticklabels: false, title: '' },
+
+      // Only bottom axis shows time
+      xaxis4: {
+        title: 'Time (s)',
+        titlefont: { size: 32 },
+        tickfont:  { size: 28 },
+        range:     [0, 2]         // initial 25 s window
+      },
+
+      // Your fixed Y-ranges
+      yaxis1: { range: [0, 1.5], titlefont: { size: 32 }, tickfont: { size: 28 } },
+      yaxis2: { range: [1.5, 3.0], titlefont: { size: 32 }, tickfont: { size: 28 } },
+      yaxis3: { range: [3.0, 4.5], titlefont: { size: 32 }, tickfont: { size: 28 } },
+      yaxis4: { range: [4.5, 6.0], titlefont: { size: 32 }, tickfont: { size: 28 } },
+
+      // leave shapes & extra annotations empty for now
+      shapes: [],
+    };
+
+    // Initial draw
+    Plotly.newPlot('plot', traces, layout);
+
+    function setStatus(msg, good = true) {
+      const el = document.getElementById("status");
+      el.textContent = msg;
+      el.style.color = good ? "#4caf50" : "#f44336";
+    }
+
+    async function scan() {
+      setStatus("Scanning…");
+      const res = await fetch("/scan");
+      const devices = await res.json();
+      const list = document.getElementById("deviceList");
+      list.innerHTML = "<option value='' disabled>Select device</option>";
+      devices.forEach(d => {
+        const opt = document.createElement("option");
+        opt.value = d.address;
+        opt.text = `${d.name} [${d.address}]`;
+        list.appendChild(opt);
+      });
+      setStatus("Scan complete ✅");
+    }
+
+    async function connect() {
+      const address = document.getElementById("deviceList").value;
+      if (!address) return alert("Select a device!");
+      setStatus("Connecting…");
+      const res = await fetch("/connect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ address })
+      });
+      const json = await res.json();
+      if (json.status === "connected") {
+        setStatus(`Connected to ${json.address}`);
+      } else {
+        setStatus("Connection failed ❌", false);
+      }
+    }
+
+    function start() {
+      if (ws) ws.close();
+      sampleCount = 0;
+      traces.forEach(t => { t.x = []; t.y = []; });
+      ws = new WebSocket(`ws://${location.host}/ws`);
+      ws.onopen    = () => setStatus("Recording started ▶️");
+      ws.onerror   = () => setStatus("WebSocket error ❌", false);
+      ws.onmessage = handleMessage;
+      ws.onclose   = () => setStatus("Recording stopped ⏹️");
+    }
+
+    function stop() {
+      if (ws) { ws.close(); ws = null; }
+    }
+
+    const sampleRate = 200;  // your Hz
+    const windowSec   = 2;   // <-- change window length here
+
+    function handleMessage(evt) {
+      const data = JSON.parse(evt.data);
+      if (!data.samples) return;
+
+      data.samples.forEach((ch, i) => {
+        const newX = ch.map((_, j) => (sampleCount + j + 1) / sampleRate);
+        traces[i].x.push(...newX);
+        traces[i].y.push(...ch);
+
+        // keep only last `windowSec` seconds of data
+        const maxPts = sampleRate * windowSec;
+        if (traces[i].x.length > maxPts) {
+          traces[i].x = traces[i].x.slice(-maxPts);
+          traces[i].y = traces[i].y.slice(-maxPts);
+        }
+      });
+
+      sampleCount += (data.samples[0] || []).length;
+      const currentTime = sampleCount / sampleRate;
+      const windowStart = Math.max(0, currentTime - windowSec);
+
+      // update the shared X-axis to the last `windowSec` seconds
+      layout.xaxis4.range = [windowStart, currentTime];
+
+      // update cursor line
+      layout.shapes = [{
+        type: 'line',
+        x0: currentTime, x1: currentTime,
+        y0: 0,           y1: 1,
+        xref: 'x4',      yref: 'paper',
+        line: { color: '#888', width: 2, dash: 'dot' }
+      }];
+
+      // update time annotation
+      layout.annotations = layout.annotations
+        .filter(a => !a.text.endsWith('s'))
+        .concat({
+          x: currentTime,
+          y: -0.1,
+          xref: 'x4',
+          yref: 'paper',
+          text: `${currentTime.toFixed(2)} s`,
+          showarrow: false,
+          font: { size: 24, color: '#e0e0e0' }
+        });
+
+      Plotly.react('plot', traces, layout);
+    }
+    async function download() {
+      const res = await fetch("/download");
+      const { csv, error } = await res.json();
+      if (error) {
+        setStatus(error, false);
+        return;
+      }
+      const blob = new Blob([csv], { type: 'text/csv' });
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement("a");
+      a.href     = url;
+      a.download = "ble_data.csv";
+      a.click();
+      URL.revokeObjectURL(url);
+      setStatus("CSV downloaded 💾");
+    }
+  </script>
+
+</body>
+</html>
