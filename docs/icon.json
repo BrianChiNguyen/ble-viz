@@ -1,0 +1,10 @@
+{
+    "name": "BLE 4-Organoids Monitoring",
+    "short_name": "BLE Viz",
+    "start_url": "/index.html",
+    "scope": "/",
+    "display": "standalone",
+    "orientation": "portrait",
+    "background_color": "#121212",
+    "theme_color": "#007aff"
+}
