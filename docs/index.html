@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BLE 4-Organoids Monitoring</title>
+
+    <!-- PWA manifest -->
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#121212">
+
+    <!-- Plotly -->
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+
+    <style>
+        html,
+        body {
+            background-color: #121212;
+            color: #e0e0e0;
+            font-family: sans-serif;
+            margin: 0;
+            padding: 20px;
+            height: 100%;
+        }
+        
+        h1 {
+            font-size: 2rem;
+            margin: 0;
+            color: #fff;
+        }
+        
+        h2 {
+            font-size: 1rem;
+            margin: 4px 0 20px;
+            color: #aaa;
+        }
+        
+        .toolbar {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+        
+        .toolbar button,
+        .toolbar select {
+            font-size: 1.5rem;
+            padding: 18px 30px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: transform 0.1s, opacity 0.2s;
+            background-image: linear-gradient(45deg, #007aff, #00ff6a);
+            color: #fff;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+        }
+        
+        .toolbar button:hover,
+        .toolbar select:hover {
+            opacity: 0.9;
+            transform: translateY(-2px);
+        }
+        
+        .toolbar button:active,
+        .toolbar select:active {
+            opacity: 0.8;
+            transform: translateY(0);
+        }
+        
+        .toolbar select {
+            background-image: linear-gradient(45deg, #0057e7, #00c851);
+        }
+        
+        #status {
+            font-size: 1.25rem;
+            color: #ffeb3b;
+            margin-left: auto;
+        }
+        
+        #plot {
+            width: 100%;
+            height: 60vh;
+            background-color: #1e1e1e;
+            border-radius: 8px;
+            box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.5);
+        }
+    </style>
+</head>
+
+<body>
+    <h1>BLE 4-Organoids Monitoring</h1>
+    <h2>© Chi Cong Nguyen</h2>
+
+    <div class="toolbar">
+        <button onclick="scan()">🔍 Scan</button>
+        <select id="deviceList" disabled>
+      <option>Select device</option>
+    </select>
+        <button onclick="connect()">🔌 Connect</button>
+        <button onclick="start()">▶️ Start Recording</button>
+        <button onclick="stop()">⏹️ Stop Recording</button>
+        <button onclick="download()">💾 Save CSV</button>
+        <div id="status">Not connected</div>
+    </div>
+
+    <div id="plot"></div>
+
+    <script>
+        // Configuration
+        const SERVICE_UUID = '00001523-1212-efde-1523-785feabcd123';
+        const CHAR_UUID = '00001526-1212-efde-1523-785feabcd123';
+        const SAMPLE_RATE_HZ = 200;
+        const WINDOW_SECONDS = 10;
+        const MAX_POINTS = SAMPLE_RATE_HZ * WINDOW_SECONDS;
+        const CHANNEL_OFFSET_VOLT = [0, 0, 0, 0];
+
+        // Plotly setup
+        const colors = ['#CF4B40', '#CFB841', '#A5CF41', '#56CF41'];
+        const traces = [0, 1, 2, 3].map(i => ({
+            x: [],
+            y: [],
+            mode: 'lines',
+            name: 'organoids' % {
+                i
+            },
+            line: {
+                width: 3,
+                color: colors[i]
+            },
+            xaxis: `x${i+1}`,
+            yaxis: `y${i+1}`
+        }));
+
+        const layout = {
+            grid: {
+                rows: 4,
+                columns: 1,
+                pattern: 'independent'
+            },
+            paper_bgcolor: '#1e1e1e',
+            plot_bgcolor: '#1e1e1e',
+            font: {
+                color: '#e0e0e0',
+                size: 24
+            },
+            showlegend: false,
+            margin: {
+                t: 80,
+                b: 60,
+                l: 60,
+                r: 20
+            },
+            // title: {
+            //     text: 'Live BLE Data (Web Bluetooth)',
+            //     font: {
+            //         size: 32
+            //     }
+            // },
+            xaxis1: {
+                showticklabels: false
+            },
+            xaxis2: {
+                showticklabels: false
+            },
+            xaxis3: {
+                showticklabels: false
+            },
+            xaxis4: {
+                title: 'Time (s)',
+                titlefont: {
+                    size: 28
+                },
+                tickfont: {
+                    size: 24
+                },
+                range: [0, WINDOW_SECONDS]
+            },
+            yaxis1: {
+                range: [0, 3.5],
+                // title: 'Voltage (V)',
+                titlefont: {
+                    size: 28
+                },
+                tickfont: {
+                    size: 24
+                }
+            },
+            yaxis2: {
+                range: [0, 3.5],
+                titlefont: {
+                    size: 28
+                },
+                tickfont: {
+                    size: 24
+                }
+            },
+            yaxis3: {
+                range: [0, 3.5],
+                titlefont: {
+                    size: 28
+                },
+                tickfont: {
+                    size: 24
+                }
+            },
+            yaxis4: {
+                range: [0, 3.5],
+                titlefont: {
+                    size: 28
+                },
+                tickfont: {
+                    size: 24
+                }
+            },
+            annotations: traces.map((t, i) => ({
+                text: t.name,
+                xref: `x${i+1} domain`,
+                yref: `y${i+1} domain`,
+                x: 0.95,
+                y: 1.2,
+                showarrow: false,
+                font: {
+                    size: 20,
+                    color: colors[i]
+                }
+            })),
+            shapes: []
+        };
+
+        Plotly.newPlot('plot', traces, layout);
+
+        // State
+        let device, characteristic;
+        let startTime = null;
+        let collected = [
+            [],
+            [],
+            [],
+            []
+        ];
+
+        // UI helper
+        function setStatus(msg, ok = true) {
+            const el = document.getElementById('status');
+            el.textContent = msg;
+            el.style.color = ok ? '#4caf50' : '#f44336';
+        }
+
+        // Actions
+        async function scan() {
+            try {
+                setStatus('Requesting BLE device…');
+                device = await navigator.bluetooth.requestDevice({
+                    filters: [{
+                        services: [SERVICE_UUID]
+                    }],
+                    optionalServices: [SERVICE_UUID]
+                });
+                const sel = document.getElementById('deviceList');
+                sel.innerHTML = `<option value="${device.id}">${device.name||device.id}</option>`;
+                sel.disabled = false;
+                setStatus(`Selected: ${device.name||device.id}`);
+            } catch {
+                setStatus('Scan cancelled', false);
+            }
+        }
+
+        async function connect() {
+            if (!device) return alert('Please scan first!');
+            setStatus('Connecting…');
+            const server = await device.gatt.connect();
+            const svc = await server.getPrimaryService(SERVICE_UUID);
+            characteristic = await svc.getCharacteristic(CHAR_UUID);
+            setStatus('Connected ✔️');
+        }
+
+        async function start() {
+            if (!characteristic) return alert('Please connect first!');
+            startTime = performance.now();
+            collected = [
+                [],
+                [],
+                [],
+                []
+            ];
+            traces.forEach(t => {
+                t.x = [];
+                t.y = [];
+            });
+            Plotly.react('plot', traces, layout);
+
+            characteristic.addEventListener('characteristicvaluechanged', handleNotification);
+            await characteristic.startNotifications();
+            setStatus('Recording ▶️');
+        }
+
+        async function stop() {
+            if (!characteristic) return;
+            await characteristic.stopNotifications();
+            characteristic.removeEventListener('characteristicvaluechanged', handleNotification);
+            setStatus('Stopped ⏹️');
+        }
+
+        function download() {
+            const L = Math.min(...collected.map(ch => ch.length));
+            let csv = 'Time(s),Ch0,Ch1,Ch2,Ch3\n';
+            for (let i = 0; i < L; i++) {
+                csv += `${(i/SAMPLE_RATE_HZ).toFixed(3)},${collected.map(ch=>ch[i].toFixed(6)).join(',')}\n`;
+            }
+            const blob = new Blob([csv], {
+                type: 'text/csv'
+            });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'ble_data.csv';
+            a.click();
+            URL.revokeObjectURL(url);
+            setStatus('CSV downloaded 💾');
+        }
+
+        function handleNotification(event) {
+            const view = new DataView(event.target.value.buffer);
+            const now = (performance.now() - startTime) / 1000;
+            const samples = [
+                [],
+                [],
+                [],
+                []
+            ];
+
+            for (let i = 0; i < view.byteLength; i += 2) {
+                const raw = view.getUint16(i, true);
+                const ch = (i / 2) % 4;
+                const v = raw * 3.3 / 4095 + CHANNEL_OFFSET_VOLT[ch];
+                samples[ch].push(v);
+            }
+
+            samples.forEach((arr, ch) => {
+                arr.forEach((v, j) => {
+                    const t = now - ((arr.length - 1 - j) / SAMPLE_RATE_HZ);
+                    traces[ch].x.push(t);
+                    traces[ch].y.push(v);
+                    collected[ch].push(v);
+                });
+                if (traces[ch].x.length > MAX_POINTS) {
+                    traces[ch].x = traces[ch].x.slice(-MAX_POINTS);
+                    traces[ch].y = traces[ch].y.slice(-MAX_POINTS);
+                }
+            });
+
+            const t0 = Math.max(0, now - WINDOW_SECONDS);
+            layout.xaxis4.range = [t0, now];
+            layout.shapes = [{
+                type: 'line',
+                x0: now,
+                x1: now,
+                y0: 0,
+                y1: 1,
+                xref: 'x4',
+                yref: 'paper',
+                line: {
+                    color: '#888',
+                    width: 2,
+                    dash: 'dot'
+                }
+            }];
+
+            Plotly.react('plot', traces, layout);
+        }
+
+        window.scan = scan;
+        window.connect = connect;
+        window.start = start;
+        window.stop = stop;
+        window.download = download;
+    </script>
+</body>
+
+</html>
